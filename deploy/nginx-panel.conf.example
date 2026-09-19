@@ -1,0 +1,16 @@
+# Include from nginx's http context. Supply your own valid certificate.
+server {
+    listen 443 ssl;
+    server_name admin.example.com;
+    ssl_certificate /etc/letsencrypt/live/admin.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/admin.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 128k;
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+    }
+}

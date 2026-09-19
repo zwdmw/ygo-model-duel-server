@@ -1,0 +1,17 @@
+{
+  "module": "project/ygoenv/ygopro/ygopro_ygoenv.cpython-311-x86_64-linux-gnu.so",
+  "sha256": "4fb870cff6ee0819772c11d16dbaf61c815cbd004b2309e25fd3c025f02b7ec6",
+  "compiler_flags": [
+    "-march=x86-64",
+    "-mtune=generic"
+  ],
+  "source": "/root/autodl-tmp/agent195m-room-20260915/recording-fix-20260915/build-project",
+  "recording_fsync": 1,
+  "changes": "Sync initial replay metadata and each accepted response; no gameplay changes",
+  "original_sources_unchanged": true,
+  "writer_sigkill_test_passed": true,
+  "source_hashes": {
+    "ygopro.h": "99942501ce4268f1fdd609b499788bbc2c9716469ea847eee863ef55f420388c",
+    "replay_response_writer.h": "1ae9f4df69d3ce3b50b7d8d9f43bf2a2c96acdbc8778dead54877708e967e880"
+  }
+}

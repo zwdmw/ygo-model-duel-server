@@ -1,0 +1,5 @@
+#!/usr/bin/env python
+"""Private adapter for the native evaluator's child-process entry point."""
+from relay import main
+
+main()

@@ -1,0 +1,16 @@
+numpy==1.26.4
+scipy==1.12.0
+jax==0.4.28
+jaxlib==0.4.28
+flax==0.8.4
+chex==0.1.86
+optax==0.2.2
+orbax-checkpoint==0.5.16
+tensorstore==0.1.63
+distrax==0.1.5
+tensorflow-probability==0.24.0
+gymnasium==0.29.1
+gym==0.26.2
+dm-env==1.6
+optree==0.11.0
+packaging==24.1

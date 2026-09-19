@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>YGO 对战管理</title>
+  <link rel="icon" href="/static/logo.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/lucide.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+  <script src="/static/deck-editor.js" defer></script>
+  <script src="/static/outbound.js" defer></script>
+  <script src="/static/replay.js" defer></script>
+</head>
+<body>
+  <div id="login" class="login-view" hidden>
+    <form id="login-form" class="login-form">
+      <img src="/static/logo.png" width="48" height="48" alt="">
+      <h1>YGO 对战管理</h1>
+      <label>管理员账号<input name="username" autocomplete="username" value="admin" required maxlength="64"></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <label>动态验证码 / 恢复码<input name="otp" autocomplete="one-time-code" maxlength="64"></label>
+      <p id="login-error" class="error" role="alert"></p>
+      <button type="submit" class="primary"><i data-lucide="log-in"></i>登录</button>
+    </form>
+  </div>
+  <div id="shell" class="shell" hidden>
+    <aside>
+      <a class="brand" href="#overview"><img src="/static/logo.png" width="34" height="34" alt=""><span>YGO 对战管理</span></a>
+      <nav aria-label="管理导航">
+        <a href="#overview" data-view="overview"><i data-lucide="layout-dashboard"></i>总览</a>
+        <a href="#room" data-view="room"><i data-lucide="radio"></i>房间</a>
+        <a href="#models" data-view="models"><i data-lucide="cpu"></i>模型</a>
+        <a href="#statistics" data-view="statistics"><i data-lucide="chart-no-axes-combined"></i>对局统计</a>
+        <a href="#decks" data-view="decks"><i data-lucide="layers"></i>卡组</a>
+        <a href="#replays" data-view="replays"><i data-lucide="film"></i>录像</a>
+        <a href="#connections" data-view="connections"><i data-lucide="network"></i>连接</a>
+        <a href="#servers" data-view="servers"><i data-lucide="server"></i>外服配置</a>
+        <a href="#operations" data-view="operations"><i data-lucide="terminal"></i>运维</a>
+        <a href="#security" data-view="security"><i data-lucide="shield-check"></i>安全</a>
+      </nav>
+      <div class="sidebar-bottom"><span id="account">admin</span><button class="icon-button" id="logout" data-tooltip="退出登录" aria-label="退出登录"><i data-lucide="log-out"></i></button></div>
+    </aside>
+    <main>
+      <header class="page-header"><div><h1 id="page-title">总览</h1><div class="muted" id="updated">正在连接</div></div><div class="header-actions"><span id="connection-status" class="badge muted">检查中</span><button id="refresh" class="icon-button" aria-label="刷新" data-tooltip="刷新"><i data-lucide="refresh-cw"></i></button></div></header>
+      <div id="offline" class="banner error" role="status" hidden>算力服务器未连接，房间控制暂不可用。</div>
+      <div id="view" aria-live="polite"></div>
+    </main>
+  </div>
+  <div id="toast" role="status" hidden></div>
+  <dialog id="modal" aria-labelledby="modal-title">
+    <form id="modal-form">
+      <div class="modal-head"><h2 id="modal-title"></h2><button type="button" class="icon-button" id="modal-close" aria-label="关闭" data-tooltip="关闭"><i data-lucide="x"></i></button></div>
+      <div id="modal-body"></div>
+      <p id="modal-error" class="error" role="alert"></p>
+      <footer><button type="button" id="modal-cancel">取消</button><button type="submit" class="primary" id="modal-submit">确认</button></footer>
+    </form>
+  </dialog>
+</body>
+</html>

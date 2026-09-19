@@ -1,0 +1,22 @@
+name: Source Tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r panel/ygo-admin/app/requirements.txt numpy==1.26.4
+      - run: python -m compileall -q room panel tools tests
+      - run: python tools/check_source.py
+      - run: python -m unittest discover -s tests -v
+      - run: python -m unittest discover -s panel/ygo-tcp-bridge/app -p 'test_*.py' -v
+      - run: python -m unittest outbound.test_outbound outbound.test_pool_refresh -v
+        env:
+          PYTHONPATH: room:room/admin:room/app-305m-admin-20260915

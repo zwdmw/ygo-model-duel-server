@@ -1,0 +1,39 @@
+{
+  "date": "2026-09-19",
+  "source_tests": {
+    "deployment": 17,
+    "public_bridge_and_gateway": 45,
+    "outbound_protocol_and_pool_cache": 18,
+    "total": 80,
+    "status": "passed"
+  },
+  "isolated_linux_verification": {
+    "python": "3.11",
+    "asset_install_and_manifest": "passed",
+    "model_registration": "passed",
+    "compute_configuration": "passed",
+    "systemd_unit_generation": "passed",
+    "architecture": "decision-v1",
+    "model_steps": 821035008,
+    "cpu_policy_warmup": "passed",
+    "warmup_seconds": 18.090966686606407,
+    "production_policy_pid_unchanged": true,
+    "production_checkpoint_unchanged": true,
+    "production_health_after": "ready"
+  },
+  "not_claimed": [
+    "New-machine systemd services actually enabled",
+    "Public DNS, TLS certificate issuance or firewall deployment",
+    "Full end-to-end real game validation for this publication",
+    "New public external-server games",
+    "Equal policy strength between native and network observations"
+  ],
+  "runtime_asset": {
+    "filename": "ygo-runtime-assets-linux-x86_64-cp311-20260919.tar.gz",
+    "sha256": "bc85a6666e315c7ff962212802d822328373d7dec8a59befa0375c911eed2e9f",
+    "bytes": 43418224,
+    "file_checksums_verified": true,
+    "contains_model_weights": false,
+    "contains_credentials": false
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "module": "project/ygoenv/ygopro/ygopro_ygoenv.cpython-311-x86_64-linux-gnu.so",
+  "sha256": "50c010afe7fd30a9c6e2afb2c9bc219b34394269e9fd48a8d44054361e357071",
+  "compiler_flags": ["-march=x86-64", "-mtune=generic"],
+  "source": "/root/autodl-tmp/replay-fix-20260914/build-project",
+  "build_outputs": "/tmp/mdpro3-195m-native",
+  "notes": "Same recorder-fixed source; no engine, observation or model logic changes."
+}

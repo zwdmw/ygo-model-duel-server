@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.png binary
+*.so binary
+*.npz binary
+*.cdb binary
+*.flax_model binary

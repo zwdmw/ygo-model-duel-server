@@ -1,0 +1,9 @@
+{
+  "root": "/srv/ygo-model-duel-server/room",
+  "app": "/srv/ygo-model-duel-server/room/app-305m-admin-20260915",
+  "data": "/srv/ygo-model-duel-server/room/data",
+  "key_file": "/srv/ygo-model-duel-server/room/admin/control.key",
+  "room_url": "http://127.0.0.1:7916",
+  "port": 7918,
+  "model_catalog": "/srv/ygo-model-duel-server/room/admin/models.json"
+}
