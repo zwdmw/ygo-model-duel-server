@@ -1,4 +1,4 @@
-"""Owner-started single-duel client; no automatic matchmaking or reconnect."""
+"""Owner-started external duel client with tournament-aware reconnects."""
 from itertools import combinations
 from contextlib import suppress
 import hashlib
@@ -10,8 +10,21 @@ import time
 from .preference import prefer_first
 from .vendor.netduel import constants as C, protocol as P
 from .vendor.netduel.actions import MultiSelector, Reader, parse_select, ls_to_spec, SelectContext
+from .vendor.netduel.board import ShadowBoard
 from .vendor.netduel.client import NetDuelClient, DuelError, DuelResult, SELECT_MESSAGES
 from .vendor.replay.actions import MultiSelect
+
+
+MAX_MATCH_GAMES = 10000
+CONNECT_WINDOW_SECONDS = 10 * 60
+RECONNECT_WINDOW_SECONDS = 5 * 60
+TRANSITION_IDLE_SECONDS = 5 * 60
+RECV_POLL_SECONDS = 5
+RECONNECT_BACKOFF_SECONDS = (1, 2, 5, 10)
+
+
+class ReconnectRequired(ConnectionError):
+    """The transport is stale but the tournament task is still active."""
 
 
 def parse_prompt(msg, body, context):
@@ -75,12 +88,26 @@ class RecordingStream(P.PacketStream):
 class ExternalClient(NetDuelClient):
     def __init__(self, *args, password="", preference="auto", journal=None,
                  state_change=None, save_replay=None, deck_source="local",
-                 auth_mode="none", account_password="", game_finished=None, **kwargs):
+                 auth_mode="none", account_password="", game_finished=None,
+                 connect_window=CONNECT_WINDOW_SECONDS,
+                 reconnect_window=RECONNECT_WINDOW_SECONDS,
+                 transition_idle=TRANSITION_IDLE_SECONDS,
+                 poll_interval=RECV_POLL_SECONDS,
+                 reconnect_backoff=RECONNECT_BACKOFF_SECONDS, **kwargs):
         super().__init__(*args, **kwargs)
         if deck_source not in ("local", "server_random") or auth_mode not in ("none", "duelchronicle"):
             raise ValueError("Invalid external deck/account mode")
         if auth_mode == "duelchronicle" and (deck_source != "server_random" or not account_password):
             raise ValueError("DuelChronicle requires server-assigned decks and account authentication")
+        limits = (connect_window, reconnect_window, transition_idle, poll_interval)
+        if any(type(value) not in (int, float) or value <= 0 for value in limits):
+            raise ValueError("Invalid external connection timeout")
+        if (
+            not isinstance(reconnect_backoff, (tuple, list))
+            or not reconnect_backoff
+            or any(type(value) not in (int, float) or value < 0 for value in reconnect_backoff)
+        ):
+            raise ValueError("Invalid external reconnect backoff")
         self.deck_source, self.auth_mode = deck_source, auth_mode
         self.account_password = account_password
         self.auth_sent = False
@@ -112,18 +139,62 @@ class ExternalClient(NetDuelClient):
         self.terminal_time = None
         self.selector = None
         self.cancelled = False
+        self.lifecycle_state = "idle"
+        self.connect_window = float(connect_window)
+        self.reconnect_window = float(reconnect_window)
+        self.transition_idle = float(transition_idle)
+        self.poll_interval = float(poll_interval)
+        self.reconnect_backoff = tuple(float(value) for value in reconnect_backoff)
+        self.last_packet_at = None
+        self.ever_joined = False
+        self.reconnect_started = None
+        self.reconnect_attempts = 0
+        self.resume_current_game = False
         self.ctx.known_codes = list(dict.fromkeys(self.main + self.extra + self.side))
 
-    def connect(self):
-        self.state_change("connecting")
-        sock = socket.create_connection((self.host, self.port), timeout=15)
+    def change_state(self, state, **fields):
+        self.lifecycle_state = state
+        self.state_change(state, **fields)
+
+    def reset_handshake(self):
+        self.auth_sent = False
+        self.authenticated = self.auth_mode == "none"
+        self.auth_deadline = None
+        self.submitted = False
+        self.own_ready = False
+        self.host_player = False
+        self.lobby_pos = -1
+        self.opponent_ready.clear()
+
+    def connect(self, reconnecting=False):
+        self.reset_handshake()
+        self.change_state(
+            "reconnecting" if reconnecting else "connecting",
+            attempt=self.reconnect_attempts if reconnecting else 0,
+        )
+        sock = socket.create_connection(
+            (self.host, self.port),
+            timeout=min(15, self.connect_window),
+        )
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for option, value in (
+            ("TCP_KEEPIDLE", 60),
+            ("TCP_KEEPINTVL", 15),
+            ("TCP_KEEPCNT", 4),
+        ):
+            if hasattr(socket, option):
+                with suppress(OSError):
+                    sock.setsockopt(
+                        socket.IPPROTO_TCP,
+                        getattr(socket, option),
+                        value,
+                    )
         self.stream = RecordingStream(sock, self.journal)
+        self.last_packet_at = time.monotonic()
         self.stream.send(P.CTOS.PLAYER_INFO, self.name.encode("utf-16-le").ljust(40, b"\0"))
-        password = self.password
-        self.password = ""
         # UTF-16 code units, not Python code points, define this protocol field.
-        encoded = password.encode("utf-16-le")
+        encoded = self.password.encode("utf-16-le")
         if len(encoded) > 38:
             raise DuelError("Room password is too long")
         self.stream.send(P.CTOS.JOIN_GAME,
@@ -143,6 +214,46 @@ class ExternalClient(NetDuelClient):
                 stream.close()
             self.stream = None
 
+    def drop_connection(self):
+        stream, self.stream = self.stream, None
+        if stream is not None:
+            with suppress(Exception):
+                stream.close()
+
+    def reconnect_deadline_expired(self):
+        return (
+            self.reconnect_started is not None
+            and time.monotonic() - self.reconnect_started >= self.reconnect_window
+        )
+
+    def idle_action(self, connection_started):
+        now = time.monotonic()
+        if self.auth_deadline and not self.authenticated and now > self.auth_deadline:
+            raise DuelError("account_login_timeout")
+        if self.terminal_time is not None:
+            return
+        if self.reconnect_deadline_expired():
+            raise ReconnectRequired("tournament reconnect handshake timed out")
+        idle = now - (self.last_packet_at or connection_started)
+        if self.lifecycle_state in ("connecting", "joining", "reconnecting"):
+            if now - connection_started >= self.connect_window:
+                raise ReconnectRequired("room handshake timed out")
+            return
+        if self.lifecycle_state == "waiting":
+            # A tournament room is owned by its server-side lifecycle. It may
+            # legitimately wait while another player or model is still loading.
+            if self.match_mode:
+                return
+            if idle >= self.timeout:
+                raise socket.timeout("single-duel lobby timed out")
+            return
+        if self.lifecycle_state in ("saving", "siding"):
+            if idle >= self.transition_idle:
+                raise ReconnectRequired("next tournament game did not start")
+            return
+        if self.lifecycle_state in ("selecting_turn", "dueling") and idle >= self.timeout:
+            raise ReconnectRequired("tournament duel transport became idle")
+
     def _handle(self, op, payload):
         if op == P.STOC.CHAT:
             if self.auth_mode == "duelchronicle" and not self.authenticated:
@@ -151,7 +262,6 @@ class ExternalClient(NetDuelClient):
                 if self.auth_sent and channel >= 11 and text.startswith("[Server]:"):
                     if "\u767b\u5f55\u6210\u529f" in text:
                         self.authenticated = True
-                        self.account_password = ""
                         self._submit_deck()
                     elif any(word in text for word in (
                             "\u5bc6\u7801\u9519\u8bef", "\u767b\u5f55\u5931\u8d25",
@@ -177,11 +287,14 @@ class ExternalClient(NetDuelClient):
         if op == P.STOC.TYPE_CHANGE and payload:
             self.host_player = bool(payload[0] & 0x10)
         if op == P.STOC.SELECT_TP:
-            self.state_change("selecting_turn", preferred_first=self.go_first)
+            self.change_state("selecting_turn", preferred_first=self.go_first)
         if op == P.STOC.JOIN_GAME:
-            self.state_change("joining")
+            self.change_state("joining")
             self.host_info = P.HostInfo.unpack(payload)
-            self.match_mode = self.host_info.mode == 1 and self.auth_mode == "duelchronicle"
+            self.match_mode = self.host_info.mode == 1
+            self.ever_joined = True
+            self.reconnect_started = None
+            self.reconnect_attempts = 0
             if self.host_info.mode != 0 and not self.match_mode:
                 raise DuelError(f"room mode {self.host_info.mode} is not a single duel")
             if self.authenticated:
@@ -194,7 +307,7 @@ class ExternalClient(NetDuelClient):
                 return
             if not self.authenticated:
                 if not self.auth_sent:
-                    self.state_change("authenticating")
+                    self.change_state("authenticating")
                     self.stream.send(P.CTOS.CHAT, (
                         "/dl " + self.account_password + "\0").encode("utf-16-le"))
                     self.auth_sent = True
@@ -202,13 +315,21 @@ class ExternalClient(NetDuelClient):
             elif self.auth_mode == "none":
                 self.stream.send(P.CTOS.HS_READY)
                 self.joined.set()
-                self.state_change("waiting")
+                self.change_state("waiting")
             return
         if op in (P.STOC.CHANGE_SIDE, P.STOC.WAITING_SIDE) and self.match_mode:
             if not self.terminal_seen:
                 raise DuelError("Match side transition without a game result")
-            # DuelChronicle replaces both decks and submits them itself.
-            self.state_change("siding", games=len(self.games))
+            self.change_state("siding", games=len(self.games))
+            if op == P.STOC.CHANGE_SIDE and self.auth_mode == "none":
+                # A normal Match waits for a side-deck submission. Tournament
+                # continuous-series rooms own the fixed decks and immediately
+                # start the next game; their dueling state safely ignores this
+                # unchanged resubmission.
+                self.stream.send(
+                    P.CTOS.UPDATE_DECK,
+                    P.update_deck(self.main + self.extra, self.side),
+                )
             return
         if op == P.STOC.ERROR_MSG:
             if len(payload) < 8:
@@ -227,7 +348,7 @@ class ExternalClient(NetDuelClient):
             raise DuelError("Server ended duel without an authoritative result")
         super()._handle(op, payload)
         if op == P.STOC.TYPE_CHANGE and self.lobby_pos in (0, 1):
-            self.state_change("waiting")
+            self.change_state("waiting")
         if op == P.STOC.HS_PLAYER_CHANGE and payload:
             if payload[0] >> 4 == self.lobby_pos:
                 self.own_ready = payload[0] & 0xF == P.PLAYERCHANGE.READY
@@ -241,34 +362,54 @@ class ExternalClient(NetDuelClient):
         self.stream.send(P.CTOS.UPDATE_DECK, P.update_deck(self.main + self.extra, self.side))
         self.submitted = True
         self.joined.set()
-        self.state_change("waiting")
+        self.change_state("waiting")
 
     def _game_msg(self, payload):
         if not payload:
             raise DuelError("Empty game message")
         msg, body = payload[0], payload[1:]
-        if msg == C.MSG_START and self.games:
-            if not self.match_mode or not self.terminal_seen or self.match_done:
-                raise DuelError("Unexpected additional duel")
-            if len(self.games) >= 5:
-                raise DuelError("Match game limit exceeded")
-            from .server_deck import ServerDeckBoard
-            self.board = ServerDeckBoard()
-            self.ctx = SelectContext(max_options=self.max_options, rng=self.rng, card_pool=self.card_pool)
-            self.ctx.known_codes = []
-            self.result = DuelResult()
-            self.terminal_seen = self.replay_received = False
-            self.selector = None
-            self.terminal_time = None
+        if msg == C.MSG_START:
+            if self.resume_current_game:
+                self.resume_current_game = False
+                self.selector = None
+            elif self.games:
+                if not self.match_mode or not self.terminal_seen or self.match_done:
+                    raise DuelError("Unexpected additional duel")
+                if len(self.games) >= MAX_MATCH_GAMES:
+                    raise DuelError("Match game limit exceeded")
+                if self.deck_source == "server_random":
+                    from .server_deck import ServerDeckBoard
+                    self.board = ServerDeckBoard()
+                    known_codes = []
+                else:
+                    self.board = ShadowBoard()
+                    known_codes = list(dict.fromkeys(
+                        self.main + self.extra + self.side
+                    ))
+                self.ctx = SelectContext(max_options=self.max_options, rng=self.rng, card_pool=self.card_pool)
+                self.ctx.known_codes = known_codes
+                self.result = DuelResult()
+                self.terminal_seen = self.replay_received = False
+                self.selector = None
+                self.terminal_time = None
         if self.version == 0x133E:
             body = legacy_message(msg, body)
+        if (
+            msg == C.MSG_WIN
+            and self.terminal_seen
+            and self.match_mode
+            and body[:2] == bytes((2, 0x11))
+        ):
+            # Evolution may report a shutdown failure after the authoritative
+            # result has already been delivered. It is not a second game.
+            return
         self._track(msg, body)
         self.board.apply(msg, body)
         self.policy.observe_game_message(msg, body)
         if msg == C.MSG_START:
             counts = struct.unpack_from("<4H", body, 10)
             self.initial_deck_counts = [list(counts[:2]), list(counts[2:])]
-            self.state_change("dueling", model_seat=self.result.our_player)
+            self.change_state("dueling", model_seat=self.result.our_player)
         if msg == C.MSG_WIN:
             if self.terminal_seen:
                 raise DuelError("Duplicate game result")
@@ -280,7 +421,7 @@ class ExternalClient(NetDuelClient):
                     "initial_deck_counts": self.initial_deck_counts}
             self.games.append(game)
             self.game_finished(game)
-            self.state_change("saving", games=len(self.games))
+            self.change_state("saving", games=len(self.games))
         elif msg == C.MSG_MATCH_KILL:
             self.match_kill = True
         elif msg in SELECT_MESSAGES:
@@ -324,33 +465,68 @@ class ExternalClient(NetDuelClient):
 
     def run(self):
         start = time.monotonic()
+        connection_started = start
+        connect_deadline = start + self.connect_window
         try:
-            self.connect()
             while not self.cancelled:
-                if self.auth_deadline and not self.authenticated and time.monotonic() > self.auth_deadline:
-                    raise DuelError("account_login_timeout")
-                replays_complete = (len(self.replay_hashes) >= len(self.games)
-                                    if self.match_mode else self.replay_received)
-                if self.terminal_time is not None and (
-                        replays_complete or time.monotonic() - self.terminal_time > 8):
-                    break
                 try:
-                    op, payload = self.stream.recv(
-                        1 if self.terminal_time is not None or not self.authenticated else self.timeout)
-                except socket.timeout:
-                    if self.terminal_time is not None or not self.authenticated:
-                        continue
-                    raise
-                self._handle(op, payload)
-        except (ConnectionError, OSError) as error:
-            if not self.settled:
-                self.result.error = type(error).__name__ + ": connection interrupted"
+                    reconnecting = self.ever_joined or self.reconnect_started is not None
+                    self.connect(reconnecting=reconnecting)
+                    connection_started = time.monotonic()
+                    while not self.cancelled:
+                        replays_complete = (len(self.replay_hashes) >= len(self.games)
+                                            if self.match_mode else self.replay_received)
+                        if self.terminal_time is not None and (
+                                replays_complete or time.monotonic() - self.terminal_time > 8):
+                            return self.result
+                        try:
+                            op, payload = self.stream.recv(
+                                min(1, self.poll_interval)
+                                if self.terminal_time is not None or not self.authenticated
+                                else self.poll_interval
+                            )
+                        except socket.timeout:
+                            self.idle_action(connection_started)
+                            continue
+                        self.last_packet_at = time.monotonic()
+                        self._handle(op, payload)
+                except (ConnectionError, OSError) as error:
+                    if self.settled:
+                        break
+                    prior = self.lifecycle_state
+                    if prior in ("selecting_turn", "dueling"):
+                        self.resume_current_game = True
+                    self.drop_connection()
+                    if not self.ever_joined:
+                        if time.monotonic() >= connect_deadline:
+                            raise TimeoutError("connection_retry_timeout") from error
+                    elif not self.match_mode:
+                        raise
+                    else:
+                        if self.reconnect_started is None:
+                            self.reconnect_started = time.monotonic()
+                        if self.reconnect_deadline_expired():
+                            raise TimeoutError("tournament_reconnect_timeout") from error
+                    self.reconnect_attempts += 1
+                    delay = self.reconnect_backoff[
+                        min(self.reconnect_attempts - 1, len(self.reconnect_backoff) - 1)
+                    ]
+                    self.change_state(
+                        "reconnecting",
+                        attempt=self.reconnect_attempts,
+                        retry_in=delay,
+                        previous_state=prior,
+                    )
+                    time.sleep(delay)
         except Exception as error:
             message = str(error)
             if self.account_password:
                 message = message.replace(self.account_password, "[REDACTED]")
+            if self.password:
+                message = message.replace(self.password, "[REDACTED]")
             self.result.error = type(error).__name__ + ": " + message[:300]
-            self.surrender()
+            if not isinstance(error, (ConnectionError, OSError)):
+                self.surrender()
         finally:
             if self.cancelled and not self.settled:
                 self.result.error = "stopped_by_owner"

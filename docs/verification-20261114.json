@@ -1,0 +1,60 @@
+{
+  "date": "2026-11-14",
+  "scope": "Public source publication and isolated deployment reproduction",
+  "source_tests": {
+    "environment": "Linux x86-64, CPython 3.12, newly created virtualenv",
+    "root_suite": 167,
+    "pvp_suite": 79,
+    "bridge_suite": 32,
+    "gateway_suite": 13,
+    "outbound_suite_including_multiroom": 33,
+    "total": 324,
+    "status": "passed"
+  },
+  "tournament": {
+    "runtime_archive_sha256": "c9f80cc5acc4eea1bade22c52ad777c2960768c9e5fa3c39a8220238da084646",
+    "runtime_file_count": 10547,
+    "node": "24.14.0",
+    "pnpm": "11.24.0",
+    "fresh_production_dependency_install": "passed",
+    "manual_launcher_start_auth_and_shutdown": "passed",
+    "isolated_native_launcher_start": "passed",
+    "continuous_native_bo2": {
+      "status": "passed",
+      "completed_games": 2,
+      "persistent_connections": true,
+      "engine_authoritative_results": true,
+      "seat_maps": [{"a": 0, "b": 1}, {"a": 1, "b": 0}],
+      "points": {"a": 3, "b": 0},
+      "replay_count": 2,
+      "series_replay_complete": true,
+      "strategy": "protocol smoke clients surrender after engine start; not a policy evaluation"
+    }
+  },
+  "management_platform": {
+    "runtime_archive_sha256": "bc85a6666e315c7ff962212802d822328373d7dec8a59befa0375c911eed2e9f",
+    "runtime_asset_install": "passed",
+    "prepare_runtime_manifest": "passed",
+    "compute_configuration_generation": "passed",
+    "panel_configuration_generation": "passed",
+    "fresh_panel_login_and_session": "passed",
+    "compute_panel_tournament_pvp_systemd_generation": "passed; generated only, not installed",
+    "new_weight_load_or_policy_warmup": "not run; compatible model weights are supplied by deployer",
+    "prior_model_warmup_record": "verification-20260919.json"
+  },
+  "publication_boundary": {
+    "history_and_candidate_source_credential_scan": "passed",
+    "both_runtime_archives_credential_scan": "passed",
+    "engine_patches_match_runtime_archive": true,
+    "production_service_restarts": 0,
+    "model_weights_included": false,
+    "production_credentials_or_game_data_included": false
+  },
+  "not_claimed": [
+    "Reproduction of the original trained AI weights or win rates",
+    "Corrected Top5 execution using the older base model runtime",
+    "Installation of public DNS, TLS certificates, firewalls or systemd on another person's host",
+    "Manual MDPro3 GUI validation or a natural full-length duel in this publication",
+    "Unconditional rebuilding of all third-party native dependencies from this repository alone"
+  ]
+}

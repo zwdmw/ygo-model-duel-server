@@ -1,0 +1,50 @@
+name: Native Reproduction
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+permissions:
+  contents: read
+jobs:
+  native-bo2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.0"
+      - name: Install Python and native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config liblzma-dev
+          npm install -g corepack@0.34.6
+          python -m pip install -r tournament/requirements.txt -r pvp/requirements.txt
+      - name: Install the exact published engine
+        run: |
+          python tools/fetch_runtime.py tournament
+          bash tools/setup_tournament_engine.sh
+      - name: Run two real engine games in a continuous series
+        run: |
+          set -euo pipefail
+          python tools/run_tournament.py --mode native > launcher.log 2>&1 &
+          launcher_pid=$!
+          trap 'kill "$launcher_pid" 2>/dev/null || true; wait "$launcher_pid" || true' EXIT
+          for attempt in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8787/health > /dev/null; then break; fi
+            kill -0 "$launcher_pid"
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8787/health
+          export TOURNAMENT_ADMIN_KEY="$(python -c 'import json; print(json.load(open("data/local-tournament/private/service-keys.json"))["TOURNAMENT_ADMIN_KEY"])')"
+          export TOURNAMENT_URL=http://127.0.0.1:8787
+          export PVP_HOST=127.0.0.1 PVP_PORT=6009
+          export CARDS_CDB="$PWD/runtime/evolution/resources/current/ygopro/base/cards.cdb"
+          python -m tools.native_series_e2e
+      - name: Print process logs on failure
+        if: failure()
+        run: |
+          tail -n 80 launcher.log data/local-tournament/*.log || true

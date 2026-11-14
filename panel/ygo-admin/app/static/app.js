@@ -293,6 +293,7 @@ function renderServers(){
     form.elements.room_password.disabled=!d.remember;
     enabled();
     serverDirty=true;$("#server-dirty").textContent="未保存";
+    if(typeof syncOutboundComposer==="function")syncOutboundComposer();
   };
   form.onsubmit=async e=>{
     e.preventDefault();

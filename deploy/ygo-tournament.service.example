@@ -1,0 +1,25 @@
+[Unit]
+Description=YGO Tournament Room
+Requires=ygo-pvp.service
+After=network-online.target ygo-pvp.service
+Wants=network-online.target
+PartOf=ygo-pvp.service
+
+[Service]
+Type=simple
+User=ygo-tournament
+WorkingDirectory=/opt/ygo-tournament/app
+ExecStart=/opt/ygo-tournament/venv/bin/python -m tournament.server --data-dir /var/lib/ygo-tournament --host 127.0.0.1 --port 8787 --pvp-url http://127.0.0.1:8790
+EnvironmentFile=/etc/ygo-tournament.env
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=ygo-tournament
+Restart=always
+RestartSec=5
+TimeoutStopSec=40
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

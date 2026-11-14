@@ -1,0 +1,22 @@
+{
+  "model": {
+    "filename": "ygo-runtime-assets-linux-x86_64-cp311-20260919.tar.gz",
+    "url": "https://github.com/zwdmw/ygo-model-duel-server/releases/download/runtime-20260919/ygo-runtime-assets-linux-x86_64-cp311-20260919.tar.gz",
+    "sha256": "bc85a6666e315c7ff962212802d822328373d7dec8a59befa0375c911eed2e9f",
+    "strip_components": 1,
+    "platform": "Linux x86-64, CPython 3.11",
+    "weights_included": false
+  },
+  "tournament": {
+    "filename": "ygo-tournament-engine-linux-x86_64-node24-20261114.tar.gz",
+    "url": "https://github.com/zwdmw/ygo-model-duel-server/releases/download/reproducible-20261114/ygo-tournament-engine-linux-x86_64-node24-20261114.tar.gz",
+    "sha256": "c9f80cc5acc4eea1bade22c52ad777c2960768c9e5fa3c39a8220238da084646",
+    "strip_components": 0,
+    "platform": "Linux x86-64, Node.js 24.14.0, pnpm 11.24.0",
+    "upstream": "https://github.com/diangogav/EDOpro-server-ts",
+    "upstream_commit": "6d61cbf9c3042453fa169fce41014541c48e0639",
+    "evolution_types_commit": "3f0c29df7f4d2a007cf6d0d88144ecde2606cc07",
+    "patch_directory": "deploy/evolution-patch",
+    "contents": "Compiled engine, exact card databases, Lua scripts, configuration defaults and dependency lock; no node_modules, credentials, user database or games"
+  }
+}

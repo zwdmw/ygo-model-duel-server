@@ -22,6 +22,11 @@ SNAPSHOTS = {
         "checkpoint_sha256": "0c0f877f7013b3e416dbb1f65ce4b23ad9757388dcae172d214cfa10715c8a91",
         "checkpoint_file": "model/305M_step305135616.flax_model",
     },
+    "454M": {
+        "checkpoint_steps": 454000640,
+        "checkpoint_sha256": "71cab8ce0f247b54029cc4242bcd4a80831b49c67f0dede9093a650441b82d4f",
+        "checkpoint_file": "model/catalog/71cab8ce0f247b54029cc4242bcd4a80831b49c67f0dede9093a650441b82d4f.flax_model",
+    },
 }
 
 

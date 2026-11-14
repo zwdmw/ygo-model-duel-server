@@ -200,7 +200,11 @@ class Console:
                     raise web.HTTPNotFound()
                 raw, code, headers = await self.remote("agent", name, request)
             else:
+                outbound_stop = re.fullmatch(
+                    r"outbound/(\d{8}-\d{6}-\d{4})/stop", name
+                )
                 if not (name in ("room", "decks", "password", "kick") or
+                        outbound_stop or
                         re.fullmatch(r"models/[0-9a-f]{64}/select", name) or
                         re.fullmatch(r"decks/(builtin|[0-9a-f]{16})/(default|delete|edit)", name)):
                     raise web.HTTPNotFound()
@@ -210,7 +214,9 @@ class Console:
                 async with self.mutations:
                     raw, code, headers = await self.remote(
                         "bridge" if name in ("password", "kick") else "agent", name, payload=body)
-                    target = body.get("action") if name == "room" else body.get("room_id", body.get("id"))
+                    target = (outbound_stop.group(1) if outbound_stop else
+                              body.get("action") if name == "room" else
+                              body.get("room_id", body.get("id")))
                     self.audit.add(name, code == 200, target=target)
             return web.Response(body=raw, status=code, headers=headers)
 
@@ -236,8 +242,13 @@ class Console:
                 raise ValueError("Expected an object")
             if body == {"action": "stop"}:
                 payload = body
-            elif body.get("action") in ("start", "start_continuous"):
-                allowed = {"action", "id", "revision", "preference", "nickname", "version", "password"}
+            elif body.get("action") in ("start", "start_many", "start_continuous"):
+                action = body["action"]
+                allowed = {"action", "id", "revision", "preference", "nickname", "version"}
+                if action == "start_many":
+                    allowed.update(("passwords", "rooms"))
+                else:
+                    allowed.update(("password", "model_id"))
                 if body["action"] == "start_continuous":
                     allowed.add("target")
                     target = body.get("target")
@@ -251,15 +262,55 @@ class Console:
                 payload.update(action=body["action"], preference=body.get("preference", "auto"),
                                nickname=body.get("nickname", "ModelBot"),
                                version=body.get("version", 0x1362))
+                from server_profiles import SHA, valid_password
+                if action != "start_many" and "model_id" in body:
+                    model_id = body["model_id"]
+                    if not isinstance(model_id, str) or not SHA.fullmatch(model_id):
+                        raise ValueError("Invalid model identity")
+                    payload["model_id"] = model_id
                 if body["action"] == "start_continuous":
                     payload["target"] = body["target"]
-                if "password" in body:
-                    from server_profiles import valid_password
+                if body["action"] == "start_many":
+                    if "rooms" in body and "passwords" in body:
+                        raise ValueError("Use either rooms or passwords, not both")
+                    if "rooms" in body:
+                        rooms = body["rooms"]
+                        if not isinstance(rooms, list) or not 2 <= len(rooms) <= 6:
+                            raise ValueError("Batch start requires 2-6 rooms")
+                        normalized = []
+                        for room in rooms:
+                            if not isinstance(room, dict) or set(room) - {"password", "model_id"}:
+                                raise ValueError("Invalid batch room setting")
+                            password = valid_password(room.get("password"))
+                            model_id = room.get("model_id", payload["model_id"])
+                            if not password:
+                                raise ValueError("Batch room passwords cannot be empty")
+                            if not isinstance(model_id, str) or not SHA.fullmatch(model_id):
+                                raise ValueError("Invalid model identity")
+                            normalized.append({"password": password, "model_id": model_id})
+                        passwords = [room["password"] for room in normalized]
+                        payload["rooms"] = normalized
+                    else:
+                        passwords = body.get("passwords")
+                        if (not isinstance(passwords, list)
+                                or not 2 <= len(passwords) <= 6):
+                            raise ValueError("Batch start requires 2-6 room passwords")
+                        passwords = [valid_password(value) for value in passwords]
+                        if any(not value for value in passwords):
+                            raise ValueError("Batch room passwords cannot be empty")
+                        payload["passwords"] = passwords
+                    if len(set(passwords)) != len(passwords):
+                        raise ValueError("Batch room passwords must be unique")
+                    payload.pop("password", None)
+                elif "password" in body:
                     payload["password"] = valid_password(body["password"])
             else:
                 raise ValueError("Unknown outbound action")
             raw, code, headers = await self.remote("agent", "outbound", payload=payload)
-            self.audit.add("outbound." + body["action"], code == 200, target=body.get("id"))
+            target = body.get("id")
+            if body.get("action") == "start_many":
+                target = f"{target}:{len(body.get('rooms', body.get('passwords', [])))}"
+            self.audit.add("outbound." + body["action"], code == 200, target=target)
             return web.Response(body=raw, status=code, headers=headers)
 
         async def outbound_export(request):

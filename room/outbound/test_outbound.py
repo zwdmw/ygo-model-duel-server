@@ -3,6 +3,7 @@ from pathlib import Path
 import socket
 import struct
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -10,8 +11,9 @@ from unittest.mock import patch
 import numpy as np
 
 from .client import ExternalClient, RecordingStream, legacy_message, parse_prompt
+from .continuous import authoritative_outcome
 from .preference import is_tenpai, prefer_first
-from .run import REPLAY_LIMIT, replay_container
+from .run import REPLAY_LIMIT, replay_container, validate_native_binding
 from .structured import CONTRACT, MESSAGES, StructuredEncoder, effect_id
 from .vendor.netduel import constants as C, protocol as P
 from .vendor.netduel.actions import (ActionAct, LegalAction, MultiSelector,
@@ -152,6 +154,7 @@ class ReplayContainerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported external replay format"):
                 replay_container(raw)
 
+
     def test_client_stores_the_host_payload_unchanged(self):
         received = []
         client = ExternalClient("127.0.0.1", 1, "TestBot", [PAIDRA] * 40, [],
@@ -162,7 +165,56 @@ class ReplayContainerTests(unittest.TestCase):
         self.assertTrue(client.replay_received)
 
 
+class RuntimeBindingTests(unittest.TestCase):
+    def test_checkpoint_native_binding_must_match_runtime(self):
+        runtime = "a" * 64
+        result = validate_native_binding(
+            {"sha256": runtime, "observation_revision": "v2"},
+            {"native_module_sha256": runtime},
+        )
+        self.assertEqual(result["runtime_native_module_sha256"], runtime)
+        with self.assertRaisesRegex(ValueError, "differs from runtime"):
+            validate_native_binding({"sha256": runtime}, {"native_module_sha256": "b" * 64})
+
+    def test_legacy_sidecar_without_native_binding_is_reported(self):
+        result = validate_native_binding({"sha256": "a" * 64}, {})
+        self.assertIsNone(result["model_native_module_sha256"])
+
+
+class ContinuousOutcomeTests(unittest.TestCase):
+    def test_long_tournament_match_is_authoritative(self):
+        games = [
+            {"our_player": index % 2, "winner": index % 2}
+            for index in range(20)
+        ]
+        result = {
+            "event": "complete",
+            "terminated": True,
+            "truncated": False,
+            "selftest": False,
+            "result_scope": "match",
+            "match_ended": True,
+            "match_kill": False,
+            "games": games,
+            "outcome": "win",
+        }
+        self.assertEqual(authoritative_outcome(result), "win")
+
+
 class NetworkTests(unittest.TestCase):
+    @staticmethod
+    def tournament_handshake(stream, observed):
+        observed.append(stream.recv(3))
+        observed.append(stream.recv(3))
+        host_info = struct.pack(
+            "<IBBBBB3xiBBH",
+            0, 1, 1, 5, 1, 0, 8000, 5, 1, 180,
+        )
+        stream.send(P.STOC.JOIN_GAME, host_info)
+        observed.append(stream.recv(3))
+        stream.send(P.STOC.TYPE_CHANGE, b"\x10")
+        observed.append(stream.recv(3))
+
     def test_explicit_legacy_chain_conversion(self):
         body = bytes.fromhex("0002010000808000008000000038fa68010002000a80a38f1600cf38fa030002010a00000000")
         parsed = parse_prompt(C.MSG_SELECT_CHAIN, legacy_message(C.MSG_SELECT_CHAIN, body),
@@ -219,6 +271,302 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(joins, [(("out", P.CTOS.JOIN_GAME, b""), {"redacted": True})])
         self.assertEqual(replays, [HOST_REPLAY])
         self.assertTrue(client.terminal_seen)
+
+    def test_tournament_match_keeps_connection_and_plays_next_game(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        observed, replays, failures, states = [], [], [], []
+        second_replay = HOST_REPLAY[:-1] + bytes((HOST_REPLAY[-1] ^ 1,))
+
+        def host():
+            try:
+                sock, _ = listener.accept()
+                stream = P.PacketStream(sock)
+                observed.append(stream.recv(3))
+                observed.append(stream.recv(3))
+                host_info = struct.pack(
+                    "<IBBBBB3xiBBH",
+                    0, 1, 1, 5, 1, 0, 8000, 5, 1, 180,
+                )
+                stream.send(P.STOC.JOIN_GAME, host_info)
+                observed.append(stream.recv(3))
+                stream.send(P.STOC.TYPE_CHANGE, b"\x10")
+                observed.append(stream.recv(3))
+                stream.send(P.STOC.DUEL_START)
+                first = struct.pack(
+                    "<BBiiHHHH", 0, 5, 8000, 8000, 40, 0, 40, 0
+                )
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + first)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 0, 1)))
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 2, 0x11)))
+                stream.send(P.STOC.CHANGE_SIDE)
+                observed.append(stream.recv(3))
+                stream.send(P.STOC.DUEL_START)
+                second = struct.pack(
+                    "<BBiiHHHH", 1, 5, 8000, 8000, 40, 0, 40, 0
+                )
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + second)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 0, 1)))
+                stream.send(P.STOC.REPLAY, HOST_REPLAY)
+                stream.send(P.STOC.REPLAY, second_replay)
+                stream.send(P.STOC.DUEL_END)
+                stream.close()
+            except Exception as error:
+                failures.append(error)
+            finally:
+                listener.close()
+
+        thread = threading.Thread(target=host)
+        thread.start()
+        policy = SimpleNamespace(
+            bind=lambda client: None,
+            observe_game_message=lambda *args: None,
+        )
+        client = ExternalClient(
+            "127.0.0.1", port, "TournamentBot", [PAIDRA] * 40, [], policy,
+            password="player-code", save_replay=replays.append,
+            state_change=lambda state, **fields: states.append((state, fields)),
+        )
+        result = client.run()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            [opcode for opcode, _ in observed],
+            [
+                P.CTOS.PLAYER_INFO,
+                P.CTOS.JOIN_GAME,
+                P.CTOS.UPDATE_DECK,
+                P.CTOS.HS_READY,
+                P.CTOS.UPDATE_DECK,
+            ],
+        )
+        self.assertTrue(client.match_mode)
+        self.assertTrue(client.match_done)
+        self.assertTrue(client.settled)
+        self.assertEqual(len(client.games), 2)
+        self.assertEqual(client.outcome(), "draw")
+        self.assertEqual(result.our_player, 1)
+        self.assertEqual(replays, [HOST_REPLAY, second_replay])
+        self.assertIn(("siding", {"games": 1}), states)
+        self.assertIsInstance(client.board, ShadowBoard)
+        self.assertIn(PAIDRA, client.ctx.known_codes)
+
+    def test_tournament_lobby_waits_past_duel_idle_timeout(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        observed, failures, states = [], [], []
+
+        def host():
+            try:
+                sock, _ = listener.accept()
+                stream = P.PacketStream(sock)
+                self.tournament_handshake(stream, observed)
+                time.sleep(0.12)
+                stream.send(P.STOC.DUEL_START)
+                start = struct.pack("<BBiiHHHH", 0, 5, 8000, 8000, 40, 0, 40, 0)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + start)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 0, 1)))
+                stream.send(P.STOC.REPLAY, HOST_REPLAY)
+                stream.send(P.STOC.DUEL_END)
+                stream.close()
+            except Exception as error:
+                failures.append(error)
+            finally:
+                listener.close()
+
+        thread = threading.Thread(target=host)
+        thread.start()
+        policy = SimpleNamespace(
+            bind=lambda client: None,
+            observe_game_message=lambda *args: None,
+        )
+        client = ExternalClient(
+            "127.0.0.1", port, "WaitingBot", [PAIDRA] * 40, [], policy,
+            password="player-code", timeout=0.05, poll_interval=0.01,
+            state_change=lambda state, **fields: states.append((state, fields)),
+        )
+        result = client.run()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(result.error, "")
+        self.assertTrue(client.settled)
+        self.assertIn(("waiting", {}), states)
+
+    def test_tournament_reconnects_between_games(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        observed, failures, states = [], [], []
+        second_replay = HOST_REPLAY[:-1] + bytes((HOST_REPLAY[-1] ^ 1,))
+
+        def host():
+            try:
+                first, _ = listener.accept()
+                stream = P.PacketStream(first)
+                self.tournament_handshake(stream, observed)
+                stream.send(P.STOC.DUEL_START)
+                start = struct.pack("<BBiiHHHH", 0, 5, 8000, 8000, 40, 0, 40, 0)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + start)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 0, 1)))
+                stream.send(P.STOC.CHANGE_SIDE)
+                observed.append(stream.recv(3))
+                stream.close()
+
+                second, _ = listener.accept()
+                stream = P.PacketStream(second)
+                self.tournament_handshake(stream, observed)
+                stream.send(P.STOC.DUEL_START)
+                start = struct.pack("<BBiiHHHH", 1, 5, 8000, 8000, 40, 0, 40, 0)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + start)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 0, 1)))
+                stream.send(P.STOC.REPLAY, HOST_REPLAY)
+                stream.send(P.STOC.REPLAY, second_replay)
+                stream.send(P.STOC.DUEL_END)
+                stream.close()
+            except Exception as error:
+                failures.append(error)
+            finally:
+                listener.close()
+
+        thread = threading.Thread(target=host)
+        thread.start()
+        policy = SimpleNamespace(
+            bind=lambda client: None,
+            observe_game_message=lambda *args: None,
+        )
+        client = ExternalClient(
+            "127.0.0.1", port, "ReconnectBot", [PAIDRA] * 40, [], policy,
+            password="player-code", poll_interval=0.01,
+            reconnect_backoff=(0.01,),
+            state_change=lambda state, **fields: states.append((state, fields)),
+        )
+        result = client.run()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(result.error, "")
+        self.assertEqual(len(client.games), 2)
+        self.assertTrue(client.settled)
+        self.assertTrue(any(state == "reconnecting" for state, _fields in states))
+        joins = [packet for packet in observed if packet[0] == P.CTOS.JOIN_GAME]
+        self.assertEqual(len(joins), 2)
+        self.assertEqual(joins[0][1], joins[1][1])
+
+    def test_tournament_reconnects_during_later_game(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        observed, failures, states = [], [], []
+        binds = []
+        second_replay = HOST_REPLAY[:-1] + bytes((HOST_REPLAY[-1] ^ 1,))
+
+        def host():
+            try:
+                first, _ = listener.accept()
+                stream = P.PacketStream(first)
+                self.tournament_handshake(stream, observed)
+                stream.send(P.STOC.DUEL_START)
+                start = struct.pack("<BBiiHHHH", 0, 5, 8000, 8000, 40, 0, 40, 0)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + start)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 0, 1)))
+                stream.send(P.STOC.CHANGE_SIDE)
+                observed.append(stream.recv(3))
+                stream.send(P.STOC.DUEL_START)
+                start = struct.pack("<BBiiHHHH", 1, 5, 8000, 8000, 40, 0, 40, 0)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + start)
+                time.sleep(0.02)
+                stream.close()
+
+                second, _ = listener.accept()
+                stream = P.PacketStream(second)
+                self.tournament_handshake(stream, observed)
+                stream.send(P.STOC.DUEL_START)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_START,)) + start)
+                stream.send(P.STOC.GAME_MSG, bytes((C.MSG_WIN, 0, 1)))
+                stream.send(P.STOC.REPLAY, HOST_REPLAY)
+                stream.send(P.STOC.REPLAY, second_replay)
+                stream.send(P.STOC.DUEL_END)
+                stream.close()
+            except Exception as error:
+                failures.append(error)
+            finally:
+                listener.close()
+
+        thread = threading.Thread(target=host)
+        thread.start()
+        policy = SimpleNamespace(
+            bind=lambda client: binds.append(client.result.our_player),
+            observe_game_message=lambda *args: None,
+        )
+        client = ExternalClient(
+            "127.0.0.1", port, "ResumeBot", [PAIDRA] * 40, [], policy,
+            password="player-code", poll_interval=0.01,
+            reconnect_backoff=(0.01,),
+            state_change=lambda state, **fields: states.append((state, fields)),
+        )
+        result = client.run()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(result.error, "")
+        self.assertEqual(len(client.games), 2)
+        self.assertTrue(client.settled)
+        self.assertEqual(len(binds), 3)
+        self.assertTrue(any(
+            state == "reconnecting" and fields.get("previous_state") == "dueling"
+            for state, fields in states
+        ))
+
+    def test_rejected_room_code_does_not_retry(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(0.3)
+        port = listener.getsockname()[1]
+        accepted, failures = [], []
+
+        def host():
+            try:
+                sock, _ = listener.accept()
+                accepted.append(True)
+                stream = P.PacketStream(sock)
+                stream.recv(3)
+                stream.recv(3)
+                stream.send(P.STOC.ERROR_MSG, b"\x01\x00\x00\x00" + struct.pack("<I", 0))
+                stream.close()
+                try:
+                    extra, _ = listener.accept()
+                except socket.timeout:
+                    return
+                accepted.append(True)
+                extra.close()
+            except Exception as error:
+                failures.append(error)
+            finally:
+                listener.close()
+
+        thread = threading.Thread(target=host)
+        thread.start()
+        client = ExternalClient(
+            "127.0.0.1", port, "RejectedBot", [PAIDRA] * 40, [],
+            SimpleNamespace(observe_game_message=lambda *args: None),
+            password="bad-code", poll_interval=0.01,
+            reconnect_backoff=(0.01,),
+        )
+        result = client.run()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(len(accepted), 1)
+        self.assertIn("join_rejected", result.error)
 
     def test_bad_action_is_not_replaced_with_a_heuristic(self):
         client = ExternalClient("127.0.0.1", 1, "Test", [PAIDRA] * 40, [],

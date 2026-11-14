@@ -1,13 +1,13 @@
-"""One isolated CPU policy process and one explicitly requested external duel."""
+"""One isolated external room worker backed by a shared GPU policy service."""
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import time
-from types import SimpleNamespace
 
 
 def now():
@@ -17,6 +17,29 @@ def now():
 # Preserve the host's original replay bytes for both supported containers.
 REPLAY_CONTAINERS = (b"yrp1", b"yrp2")
 REPLAY_LIMIT = 16 * 1024 * 1024
+SHA256 = re.compile(r"[0-9a-f]{64}")
+TOURNAMENT_DUEL_IDLE_SECONDS = 11 * 60
+
+
+def validate_native_binding(native, metadata):
+    """Require a checkpoint's recorded native module when it declares one."""
+    runtime_sha = native.get("sha256") if isinstance(native, dict) else None
+    if not SHA256.fullmatch(runtime_sha or ""):
+        raise ValueError("Runtime native module hash is missing or invalid")
+    expected_sha = metadata.get("native_module_sha256") if isinstance(metadata, dict) else None
+    if expected_sha is not None:
+        if not SHA256.fullmatch(expected_sha):
+            raise ValueError("Checkpoint native module hash is invalid")
+        if expected_sha != runtime_sha:
+            raise ValueError(
+                "Checkpoint native module differs from runtime: "
+                f"{expected_sha} != {runtime_sha}"
+            )
+    return {
+        "runtime_native_module_sha256": runtime_sha,
+        "runtime_native_observation_revision": native.get("observation_revision"),
+        "model_native_module_sha256": expected_sha,
+    }
 
 
 def replay_container(raw):
@@ -83,6 +106,7 @@ def execute(config):
     output.mkdir(parents=True, exist_ok=True)
     random_deck = config.get("deck_source", "local") == "server_random"
     metadata = dict(config["model"])
+    runtime_binding = {}
     metadata.update(session=output.name, source="external", client_profile="outbound-legacy",
                     host=config["display_host"], port=config["port"],
                     model_deck_name=config["deck_name"], human_deck_name="Unknown",
@@ -98,7 +122,7 @@ def execute(config):
     atomic_json(output / "status.json", old_status)
     replay_entries = []
     container = ""
-    client = None
+    client = remote_policy = None
     outcome = "incomplete"
     error = ""
     result_document = {}
@@ -107,6 +131,9 @@ def execute(config):
         "status": "recording", "started_at": recording_started, "session": output.name})
 
     def status(state, **fields):
+        if state != "reconnecting":
+            for key in ("attempt", "retry_in", "previous_state"):
+                old_status.pop(key, None)
         old_status.update(state=state, updated_at=now(), **fields)
         atomic_json(output / "status.json", old_status)
 
@@ -146,33 +173,40 @@ def execute(config):
         if native.get("source_hashes", {}).get("ygopro.h") != CONTRACT["source_sha256"]:
             raise ValueError("Runtime encoder contract changed; parity revalidation required")
         import worker
-        import jax
-        import numpy as np
-        from policy_ipc import validate_observation
+        from .policy_ipc import PolicyClient
         from .pool_assets import PoolAssets
-        from .pool_policy import load_policy
         pool_config = config.get("pool")
         assets = (PoolAssets(pool_config["path"], app, pool_config["sha256"])
                   if pool_config is not None else None)
-        args = SimpleNamespace(seed=config["seed"], output=output,
-                               model_deck=worker.MODEL_DECK if random_deck else output / "model.ydk",
-                               human_deck=worker.MODEL_DECK if random_deck else output / "model.ydk")
         architecture = None
+        sidecar_document = {}
         sidecar = worker.CHECKPOINT.with_name(worker.CHECKPOINT.name + ".json")
         if sidecar.is_file() and not sidecar.is_symlink():
             try:
-                architecture = json.loads(sidecar.read_text()).get("architecture")
+                sidecar_document = json.loads(sidecar.read_text())
+                architecture = sidecar_document.get("architecture")
             except ValueError:
                 architecture = None
-        if architecture == "official":
-            from .official_policy import load_policy as load_official
-            agent, infer, schema, pool_metadata = load_official(args, app, worker.CHECKPOINT, assets)
-            official_stats = pool_metadata
-        else:
-            agent, infer, schema, pool_metadata = load_policy(args, assets)
-            official_stats = None
+        runtime_binding = validate_native_binding(native, sidecar_document)
+        metadata.update(runtime_binding)
+        atomic_json(output / "session.json", metadata)
+        policy_socket = config.get("policy_socket")
+        if not isinstance(policy_socket, str) or not policy_socket:
+            raise ValueError("Shared GPU policy socket is unavailable")
+        remote_policy = PolicyClient(policy_socket, expected=worker.IDENTITY)
+        if remote_policy.identity.get("backend") != "gpu":
+            raise RuntimeError("Shared outbound policy is not using the GPU backend")
+        pool_metadata = remote_policy.identity.get("card_pool")
+        if not isinstance(pool_metadata, dict):
+            raise RuntimeError("Shared outbound policy did not report its card pool")
 
         metadata["card_pool"] = pool_metadata
+        metadata["policy"] = {
+            "backend": remote_policy.identity.get("backend"),
+            "pid": remote_policy.identity.get("pid"),
+            "policy_session": remote_policy.identity.get("policy_session"),
+            "shared": True,
+        }
         atomic_json(output / "session.json", metadata)
         pool = CardPool(assets.path / "cards.cdb" if assets else app / "project/assets/locale/en/cards.cdb",
                         assets.path / "code_list.txt" if assets else app / "project/scripts/code_list.txt")
@@ -184,7 +218,7 @@ def execute(config):
         class Policy:
             def bind(self, bound):
                 self.client = bound
-                self.state = jax.device_put(agent.init_rnn_state(1))
+                remote_policy.reset()
                 encoder.reset(bound.result.our_player, config["seed"])
 
             def observe_game_message(self, msg, body):
@@ -194,24 +228,23 @@ def execute(config):
             def choose(self, state):
                 nonlocal inference_seconds
                 observation = encoder.encode_state(state, self.client.selector)
-                validate_observation(observation, schema)
-                tick = time.monotonic()
-                if official_stats is not None:
-                    from .official_policy import count_unmapped, lookup_for
-                    unmapped = int(np.asarray(count_unmapped(observation, lookup_for(official_stats))))
-                    if unmapped and decisions.tell() < 4 * 1024 * 1024:
-                        decisions.write(json.dumps({"t": now(), "event": "official_unmapped_ids",
-                                                    "count": unmapped}) + "\n")
-                self.state, action, logits = infer(self.state, observation)
-                jax.block_until_ready(action)
-                elapsed = time.monotonic() - tick
+                index, elapsed = remote_policy.infer(
+                    state.our_player, state.n, observation
+                )
                 inference_seconds += elapsed
-                index = int(np.asarray(action)[0])
-                if not np.isfinite(np.asarray(logits)).all() or not 0 <= index < state.n:
-                    raise ValueError("Invalid model output; no heuristic fallback")
+                response = remote_policy.last_response
+                unmapped = response.get("unmapped_count", 0)
+                if unmapped and decisions.tell() < 4 * 1024 * 1024:
+                    decisions.write(json.dumps({
+                        "t": now(),
+                        "event": "official_unmapped_ids",
+                        "count": unmapped,
+                    }) + "\n")
                 decisions.write(json.dumps({"msg": state.msg, "turn": state.turn,
                     "game": len(client.games) + 1,
-                    "action": index, "legal_count": state.n, "inference_ms": elapsed * 1000}) + "\n")
+                    "action": index, "legal_count": state.n,
+                    "inference_ms": elapsed * 1000,
+                    "queue_ms": response.get("queue_ms", 0)}) + "\n")
                 decisions.flush()
                 os.fsync(decisions.fileno())
                 status("dueling", decisions=sum(g["decisions"] for g in client.games) +
@@ -225,7 +258,8 @@ def execute(config):
         client = ExternalClient(
             config["address"], config["port"], config.get("nickname", "ModelBot"),
             main, extra, Policy(), side=side, version=config.get("version", 0x1362),
-            seed=config["seed"], timeout=180, max_options=128, card_pool=pool,
+            seed=config["seed"], timeout=TOURNAMENT_DUEL_IDLE_SECONDS,
+            max_options=128, card_pool=pool,
             password=config.pop("password", ""), preference=config.get("preference", "auto"),
             deck_source=config.get("deck_source", "local"), auth_mode=config.get("auth_mode", "none"),
             account_password=config.pop("account_password", ""), game_finished=game_finished,
@@ -237,7 +271,8 @@ def execute(config):
         metadata["human_seat"] = 1 - result.our_player if result.our_player in (0, 1) else None
         atomic_json(output / "session.json", metadata)
         result_document = {
-            **worker.IDENTITY, "source": "external", "event": "complete" if settled else "incomplete",
+            **worker.IDENTITY, **runtime_binding, "source": "external",
+            "event": "complete" if settled else "incomplete",
             "terminated": settled, "truncated": not settled, "selftest": config.get("selftest", False),
             "model_seat": result.our_player, "reward": {"win": 1, "loss": -1}.get(outcome, 0),
             "winner": result.winner, "win_reason": result.win_reason,
@@ -253,7 +288,8 @@ def execute(config):
     except BaseException as exc:
         error = "stopped_by_owner" if isinstance(exc, (InterruptedError, KeyboardInterrupt)) else (
             type(exc).__name__ + ": " + str(exc)[:250])
-        result_document = {"source": "external", "event": "incomplete", "outcome": "incomplete",
+        result_document = {**runtime_binding, "source": "external",
+                           "event": "incomplete", "outcome": "incomplete",
                            "error": error, "selftest": config.get("selftest", False),
                            "wall_seconds": time.monotonic() - started}
     finally:
@@ -263,6 +299,8 @@ def execute(config):
         atomic_json(output / "result.json", result_document)
         if client is not None:
             client.close()
+        if remote_policy is not None:
+            remote_policy.close()
         entries = replay_entries
         replay_error = "; ".join(client.replay_errors) if client is not None else ""
         recording_state = "complete" if outcome in ("win", "loss", "draw") else "incomplete"

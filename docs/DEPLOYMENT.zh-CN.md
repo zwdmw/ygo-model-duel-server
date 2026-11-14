@@ -20,7 +20,7 @@ git clone https://github.com/zwdmw/ygo-model-duel-server.git /srv/ygo-model-duel
 cd /srv/ygo-model-duel-server
 ```
 
-私有仓库先用 `gh auth login` 或自己的 GitHub SSH 密钥认证。不要把访问令牌写入 clone URL。
+仓库公开可读，不需要原作者账号。部署时可以 `git checkout reproducible-20261114` 固定本次源码。
 
 ## 2. 算力机：依赖与原生资产
 
@@ -31,7 +31,14 @@ room/venv/bin/python -m pip install \
   -r room/requirements-model.txt -r room/requirements-gateway.txt
 ```
 
-从 Release 取配套资产，先检查 SHA-256：
+从 Release 取配套资产，推荐使用固定 SHA-256 的安装工具：
+
+```bash
+room/venv/bin/python tools/fetch_runtime.py model
+room/venv/bin/python tools/deploy.py prepare-runtime
+```
+
+也可以手动下载、检查 SHA-256 并解压：
 
 ```bash
 mkdir -p /tmp/ygo-runtime-assets
@@ -198,3 +205,14 @@ sudo systemctl enable --now ygo-bridge ygo-panel
 
 升级时先检查私服和外服均为空闲，备份 `private/`、`room/admin/` 配置与业务数据，
 再更新代码、重新预检并重启对应服务。不要把运行备份包直接覆盖到正在服务的目录。
+
+## 10. 与赛事房间组合
+
+赛事房间可以独立安装，不依赖平台账号或 AI 权重，见
+[赛事复现指南](REPRODUCE_TOURNAMENT.zh-CN.md)。平台外服管理可把已登记模型作为选手连接到赛事
+`6009`，分别填写每个席位的连接码；赛事 `6009` 与平台人机入口 `6008` 是不同服务。
+平台 HTTPS 和赛事 `/tournament/` 可以共用 Nginx；保留各自配置、私钥与数据目录。
+
+源代码测试和平台配置生成不需要模型；真实模型对战必须自行提供权重、架构 sidecar 和匹配训练资源。
+`runtime-20260919` 是基础 CPU 运行时，不能直接运行 corrected Top5：
+该高级功能要求 `docs/CORRECTED_TOP5.md` 所列额外引擎与评测产物，本仓库不包含原作者的评测目录。

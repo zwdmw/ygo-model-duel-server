@@ -58,7 +58,7 @@ def make_env(args, mode, seat):
     )
     if mode == "windbot":
         options.update(
-            record=True, replay_dir=str(args.output / "replay"),
+            record=True,
             windbot_root=str(ROOT),
             windbot_executable=str(ROOT / "relay.py"),
             windbot_executor="Human",

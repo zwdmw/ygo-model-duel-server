@@ -1,11 +1,11 @@
 # External Duel Client
 
-Owner-started, one-session-at-a-time client for compatible YGOPro TCP rooms.
+Owner-started, bounded multi-room client for compatible YGOPro TCP rooms.
 The management page is `/#servers`.
 
 1. Save the host, port, verified model, and model deck in a server preset.
-2. Select a protocol and optional one-session password.
-3. Start the external duel. Saving a preset alone never connects.
+2. Select a protocol and enter one or more room passwords.
+3. Start up to six independent external duels. Saving a preset alone never connects.
 4. Stop explicitly to surrender/disconnect and finalize incomplete records.
 
 `auto` identifies Tenpai from the submitted main deck, not the file name:
@@ -21,11 +21,24 @@ settings override the automatic preference.
   are not changed.
 - Public unicast destinations only; resolved addresses are pinned before launch.
 - Authentication, CSRF, preset revision checking, bounded downloads, and a
-  single-active-session guard apply to the management API.
+  six-session capacity guard apply to the management API.
+- A batch start validates every password and reserves the full requested
+  capacity before launching. Every room keeps an independent worker and
+  recurrent state while sharing one GPU-resident policy.
 - Passwords are sent through the subprocess stdin, never command arguments.
   JOIN_GAME is redacted from the network journal.
 - YGOPro2 1.036.2 and the supported legacy wire format are explicit choices.
-  Unsupported match/tag rooms are rejected; no auto-rematch or side-decking.
+  Single and Match rooms are supported. Match keeps one TCP connection across
+  games and resubmits the unchanged deck when a normal host requests side
+  decking. Server-managed tournament series may start the next fixed-deck game
+  immediately. Tag rooms remain unsupported.
+- Match rooms use a state-driven lifetime instead of one global socket timeout.
+  Connecting retries for up to ten minutes. A connected tournament lobby waits
+  until the server starts or closes it, while duel and between-game stalls
+  trigger bounded five-minute reconnect attempts with backoff. Reconnecting
+  keeps the slot reserved and reuses the same private room credential. Invalid
+  credentials and explicit server rejection still fail immediately; owner stop
+  still terminates the worker immediately.
 
 ## Recordings And Statistics
 
@@ -86,7 +99,8 @@ the hosted-room builtin and default were not edited. Actual host messages state
 that blank passwords enter single mode, `M` match mode, and `T` tag mode.
 The host also discourages competitive decks in its random single queue.
 Use an agreed room and disclose that the opponent is a model.
-Match remains unsupported by this release.
+Match rooms keep the submitted deck unchanged between games; this client does
+not select alternative side-deck cards.
 
 ## External Card Pool
 

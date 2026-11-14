@@ -1,0 +1,4 @@
+-r panel/ygo-admin/app/requirements.txt
+-r tournament/requirements.txt
+-r pvp/requirements.txt
+numpy==1.26.4

@@ -101,17 +101,26 @@ class ModelCatalog:
         unique = {row["id"]: row for row in rows}
         ranked = [row for row in unique.values() if row.get("win_rate") is not None]
         ordered = sorted(ranked, key=lambda row: (-row["win_rate"], -row["checkpoint_steps"]))[:10]
+        for rank, row in enumerate(ordered, 1):
+            row.update(group="general", rank=rank)
+        from compatible_experts import entries as compatible_entries
+        ordered.extend(compatible_entries(self.app, digest))
         for row in unique.values():
             if row.get("architecture") == "official" and row not in ordered:
+                row.update(group="official", rank=None)
                 ordered.append(row)
         return ordered, protocol
 
     def listing(self):
         rows, protocol = self.entries()
         return {"items": [{key: value for key, value in row.items() if not key.startswith("_")}
-                          | {"rank": rank}
-                          for rank, row in enumerate(rows, 1)],
+                          for row in rows],
                 "protocol": protocol, "source": self.run.name,
+                "groups": [
+                    {"id": "sky_corrected", "name": "Corrected Sky Striker Top 5", "limit": 5},
+                    {"id": "general", "name": "General Top 10", "limit": 10},
+                    {"id": "official", "name": "Official", "limit": None},
+                ],
                 "ranking": "win_rate_desc_steps_desc"}
 
     def stage(self, selected):
@@ -120,7 +129,15 @@ class ModelCatalog:
         rows, _ = self.entries()
         row = next((row for row in rows if row["id"] == selected), None)
         if row is None:
-            raise ValueError("Model is no longer in the verified Top 10; refresh the list")
+            raise ValueError("Model is no longer in the verified catalog; refresh the list")
+        if row.get("group") == "sky_corrected":
+            for name, expected in row["_runtime_assets"].items():
+                path = self.app / "project" / name
+                if path.is_symlink() or digest(path) != expected:
+                    raise ValueError("Pinned expert assets differ from this runtime")
+            return {"model_label": row["name"], "checkpoint_steps": row["checkpoint_steps"],
+                    "checkpoint_sha256": selected,
+                    "checkpoint_file": f"model/catalog/{selected}.flax_model"}
         if self.paired_project and row.get("architecture") != "official":
             for name in ("assets/structured/frozen_semantics_v1.npz", "scripts/code_list.txt",
                          "assets/locale/en/cards.cdb"):

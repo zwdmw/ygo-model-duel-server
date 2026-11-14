@@ -243,7 +243,8 @@ def units(args):
             "ygo-agent": f"{python} {ROOM}/admin/agent.py --config {ROOM}/admin/agent.json",
         }
         working = ROOM
-    else:
+        service_options = ""
+    elif args.role == "panel":
         python = REPO / "panel/venv/bin/python"
         commands = {
             "ygo-bridge": f"{python} {REPO}/panel/ygo-tcp-bridge/app/tcp_bridge.py "
@@ -252,6 +253,40 @@ def units(args):
                          f"--config {REPO}/panel/private/site.json",
         }
         working = REPO / "panel"
+        service_options = ""
+    elif args.role == "tournament":
+        python = REPO / "tournament/venv/bin/python"
+        commands = {
+            "ygo-tournament": (
+                f"{python} -m tournament.server "
+                "--data-dir /var/lib/ygo-tournament --host 127.0.0.1 --port 8787 "
+                "--pvp-url http://127.0.0.1:8790"
+            ),
+        }
+        working = REPO
+        service_options = (
+            "EnvironmentFile=/etc/ygo-tournament.env\n"
+            "StateDirectory=ygo-tournament\n"
+        )
+    else:
+        python = REPO / "pvp/venv/bin/python"
+        commands = {
+            "ygo-pvp": (
+                f"{python} -m pvp.server --data-dir /var/lib/ygo-pvp "
+                "--http-host 127.0.0.1 --http-port 8790 "
+                "--tcp-host 0.0.0.0 --tcp-port 6009 "
+                "--engine-host 127.0.0.1 --engine-port 7711 "
+                "--fixed-deck /etc/ygo-pvp/fixed-decks/SkyStriker.ydk "
+                "--room-registry-dir /run/ygo-provisioning"
+            ),
+        }
+        working = REPO
+        service_options = (
+            "EnvironmentFile=/etc/ygo-pvp.env\n"
+            "StateDirectory=ygo-pvp\n"
+            "RuntimeDirectory=ygo-provisioning\n"
+            "RuntimeDirectoryMode=0755\n"
+        )
     output = REPO / "deploy/generated"
     output.mkdir(parents=True, exist_ok=True)
     for name, command in commands.items():
@@ -263,7 +298,8 @@ def units(args):
             f"[Service]\nType=simple\nUser={args.user}\nWorkingDirectory={working}\n"
             f"ExecStart={command}\nRestart=always\nRestartSec=5\nTimeoutStopSec=40\n"
             "KillMode=control-group\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n"
-            "Environment=PYTHONUNBUFFERED=1\n\n[Install]\nWantedBy=multi-user.target\n",
+            f"Environment=PYTHONUNBUFFERED=1\n{service_options}\n"
+            "[Install]\nWantedBy=multi-user.target\n",
             encoding="utf-8")
     print(f"Units written to {output}; no services were installed or started.")
 
@@ -322,7 +358,9 @@ def main():
     panel.add_argument("--username", default="admin")
     panel.set_defaults(func=init_panel)
     service = commands.add_parser("write-units")
-    service.add_argument("--role", choices=["compute", "panel"], required=True)
+    service.add_argument(
+        "--role", choices=["compute", "panel", "tournament", "pvp"], required=True
+    )
     service.add_argument("--user", default="ygo")
     service.set_defaults(func=units)
     check = commands.add_parser("preflight")

@@ -1,0 +1,27 @@
+[Unit]
+Description=Evolution YGOPro Native Engine
+Requires=ygo-pvp.service
+After=network-online.target ygo-pvp.service
+Wants=network-online.target
+PartOf=ygo-pvp.service
+
+[Service]
+Type=simple
+User=ygo-evolution
+WorkingDirectory=/opt/ygo-evolution
+ExecStart=/opt/node-v24.14.0/bin/node --env-file=/opt/ygo-evolution/.env /opt/ygo-evolution/dist/src/index.js
+Environment=NODE_OPTIONS=--max-old-space-size=256
+Environment=NODE_ENV=production
+Environment=YGO_PROVISIONING_DIR=/run/ygo-provisioning
+Restart=always
+RestartSec=5
+TimeoutStopSec=40
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

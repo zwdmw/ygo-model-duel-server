@@ -29,6 +29,7 @@ class Agent:
         self.config = config
         self.root, self.data = Path(config["root"]), Path(config["data"])
         self.app_root = Path(config["app"])
+        self.outbound_app = Path(config.get("outbound_app", config["app"])).resolve()
         sys.path.insert(0, str(self.app_root))
         from deck_config import parse_ydk, selection_name, validate_selection
         from replay_store import atomic_json
@@ -289,13 +290,22 @@ class Agent:
                 raise ValueError("Expected an object")
             if body.get("action") == "start":
                 result = await self.outbound.start(body)
+            elif body.get("action") == "start_many":
+                result = await self.outbound.start_many(body)
             elif body.get("action") == "start_continuous":
                 result = await self.outbound.continuous.start(body)
-            elif body == {"action": "stop"}:
-                result = await self.outbound.stop()
+            elif body.get("action") == "stop" and set(body) <= {"action", "session"}:
+                result = await self.outbound.stop(body.get("session"))
             else:
                 raise ValueError("Invalid outbound action")
             return web.json_response(result)
+
+        async def outbound_stop(request):
+            if request.query:
+                raise ValueError("Unknown outbound stop option")
+            return web.json_response(
+                await self.outbound.stop(request.match_info["id"])
+            )
 
         async def outbound_playback(request):
             identity = request.match_info["id"]
@@ -478,6 +488,7 @@ class Agent:
         app.router.add_get("/statistics", statistics)
         app.router.add_get("/outbound", outbound)
         app.router.add_post("/outbound", outbound)
+        app.router.add_post("/outbound/{id}/stop", outbound_stop)
         app.router.add_get("/outbound/export/{kind:replays|decks|loss-decks}", outbound_export)
         app.router.add_get("/outbound/{id}/{kind:replay|trace|opponent-deck}", outbound_download)
         app.router.add_get("/outbound/{id}/playback", outbound_playback)

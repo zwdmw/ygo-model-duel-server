@@ -12,11 +12,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install -r panel/ygo-admin/app/requirements.txt numpy==1.26.4
-      - run: python -m compileall -q room panel tools tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.0"
+      - run: python -m pip install -r requirements-test.txt
+      - run: python -m compileall -q room panel tools tests tournament pvp
+      - run: node --check tournament/static/app.js
       - run: python tools/check_source.py
       - run: python -m unittest discover -s tests -v
+      - run: python -m unittest discover -s pvp -p 'test_*.py' -v
       - run: python -m unittest discover -s panel/ygo-tcp-bridge/app -p 'test_*.py' -v
-      - run: python -m unittest outbound.test_outbound outbound.test_pool_refresh -v
+      - run: python -m unittest outbound.test_outbound outbound.test_pool_refresh outbound.test_multiroom -v
         env:
           PYTHONPATH: room:room/admin:room/app-305m-admin-20260915

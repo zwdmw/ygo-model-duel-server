@@ -1,0 +1,25 @@
+[Unit]
+Description=YGO Native PvP Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ygo-pvp
+WorkingDirectory=/opt/ygo-pvp/app
+ExecStart=/opt/ygo-pvp/venv/bin/python -m pvp.server --data-dir /var/lib/ygo-pvp --http-host 127.0.0.1 --http-port 8790 --tcp-host 0.0.0.0 --tcp-port 6009 --engine-host 127.0.0.1 --engine-port 7711 --fixed-deck /etc/ygo-pvp/fixed-decks/SkyStriker.ydk --room-registry-dir /run/ygo-provisioning
+EnvironmentFile=/etc/ygo-pvp.env
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=ygo-pvp
+RuntimeDirectory=ygo-provisioning
+RuntimeDirectoryMode=0755
+Restart=always
+RestartSec=5
+TimeoutStopSec=40
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

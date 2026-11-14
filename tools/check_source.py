@@ -11,12 +11,13 @@ PRIVATE_NAMES = {
     "invitations.json", "room-codes.json", "panel-bootstrap.json",
 }
 RUNTIME_SUFFIXES = {".key", ".pem", ".so", ".dll", ".npz", ".cdb", ".flax_model",
-                    ".yrp", ".log", ".zip", ".gz", ".tgz", ".pyc"}
+                    ".yrp", ".evrp", ".db", ".sqlite", ".log", ".zip", ".gz", ".tgz", ".pyc"}
 PATTERNS = [
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
     re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{50,}\b"),
     re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(rb"\bLTAI[A-Za-z0-9]{16,}\b"),
 ]
 
 
@@ -26,8 +27,11 @@ def main():
     failures = []
     for relative in files:
         path = ROOT / relative
-        if (set(relative.parts) & {"private", "data", "venv", ".venv", "__pycache__"}
-                or path.suffix in RUNTIME_SUFFIXES or path.name in PRIVATE_NAMES):
+        if (set(relative.parts) & {"private", "data", "venv", ".venv", "__pycache__",
+                                  "runtime", "artifacts", "node_modules", ".learnings"}
+                or any(part.startswith(".tmp") for part in relative.parts)
+                or path.suffix in RUNTIME_SUFFIXES or path.name in PRIVATE_NAMES
+                or (path.name.startswith(".env") and not path.name.endswith(".example"))):
             failures.append(f"Excluded deployment artifact is tracked: {relative}")
             continue
         content = path.read_bytes()

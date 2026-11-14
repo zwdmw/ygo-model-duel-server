@@ -6,6 +6,7 @@ import secrets
 
 
 RUNNING = {"running", "waiting", "stopping"}
+MAX_MATCH_GAMES = 10000
 
 
 def target_count(value):
@@ -20,7 +21,7 @@ def authoritative_outcome(result):
         if (result.get("event") != "complete" or result.get("terminated") is not True
                 or result.get("truncated") or result.get("selftest")
                 or result.get("match_ended") is not True or not isinstance(games, list)
-                or not 1 <= len(games) <= 5):
+                or not 1 <= len(games) <= MAX_MATCH_GAMES):
             return "incomplete"
         if any(type(g.get("our_player")) is not int or g["our_player"] not in (0, 1)
                or type(g.get("winner")) is not int or g["winner"] not in (0, 1, 2) for g in games):
@@ -63,7 +64,9 @@ class ContinuousDuels:
         target = target_count(body.get("target"))
         settings = {key: value for key, value in body.items() if key != "target"}
         async with self.manager.lock:
-            self.manager.ensure_idle()
+            if self.active():
+                raise ValueError("A continuous outbound task is already active")
+            self.manager.ensure_capacity()
             prepared = await self.manager.prepare(settings)
             identity = secrets.token_hex(8)
             self.manager.agent.save(self.private, {"id": identity, "prepared": prepared})
@@ -90,10 +93,10 @@ class ContinuousDuels:
         state = self.public()
         if state["state"] not in RUNNING:
             return
-        job = self.manager._read(self.manager.root / "current.json")
         session = state.get("session")
+        job = self.manager._job(session) if session else {}
         if session:
-            if job.get("session") == session and self.manager._alive(job):
+            if self.manager._alive(job):
                 return
             # This update is the sole counter commit; clearing session makes it idempotent.
             result = self.manager._read(self.manager.sessions / session / "result.json")
@@ -120,8 +123,8 @@ class ContinuousDuels:
             return
         if time.time() < state["next_at"]:
             return
-        if self.manager._alive(job):
-            state.update(state="failed", last_error="Another external worker is active", next_at=None)
+        if len(self.manager.active_jobs()) >= self.manager.max_concurrent:
+            state.update(state="waiting", next_at=time.time() + 1)
             self.save(state)
             return
         private = self.manager._read(self.private)

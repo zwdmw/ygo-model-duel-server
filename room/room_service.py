@@ -72,7 +72,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tcp-config", type=Path)
     parser.add_argument("--tcp-port", type=int, default=6008)
-    parser.add_argument("--model", choices=("195M", "285M", "305M"), default="195M")
+    parser.add_argument("--model", choices=("195M", "285M", "305M", "454M"), default="195M")
     parser.add_argument("--app-dir", type=Path, default=ROOT / "app-305m-admin-20260915")
     args = parser.parse_args()
     app = args.app_dir.resolve()

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>赛事房间</title>
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="static/app.css">
+  <script src="static/app.js?v=20261113-connection-status" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./">赛事房间</a>
+    <div class="top-actions">
+      <span id="connection" data-connection-status class="status-dot">连接中</span>
+      <button id="reload" class="icon-btn" type="button" title="刷新">↻</button>
+    </div>
+  </header>
+  <main id="app" class="page"></main>
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>

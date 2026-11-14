@@ -44,3 +44,18 @@ room/app-*/evaluation-reference.json
 room/app-*/project/assets/
 room/app-*/project/script/
 room/requirements-deployed-freeze.txt
+
+# Local investigations, production snapshots and generated verification output.
+.tmp*/
+.tmp-*
+.learnings/
+artifacts/
+runtime/
+.cache/
+node_modules/
+*.evrp
+*.jsonl
+*.sqlite*
+*.db
+docs/assets/
+docs/TOURNAMENT_USER_GUIDE.html

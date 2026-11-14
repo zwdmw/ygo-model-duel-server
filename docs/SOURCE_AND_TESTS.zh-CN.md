@@ -15,7 +15,9 @@
 ## Git 与 Release 的分工
 
 - Git：两端应用源码、前端、协议适配、模型模块、环境绑定源码、部署工具与测试。
+- Git：赛事服务、原生 PvP 网关、固定卡组、Evolution 补丁和独立启动器。
 - Release：Linux CPython 3.11 运行资产，包括 `.so`、卡库、Lua 效果、冻结语义数据、卡组与外服池。
+- Release `reproducible-20261114`：固定版本赛事引擎与精确资源快照，安装时按 SHA-256 校验。
 - 本地私密备份：旧运行实例缺失文件补充包和虚拟环境快照，可能包含模型权重，不上传到代码仓库。
 - 不导出：SSH 凭据、控制密钥、邀请令牌、面板账号/TOTP、生产配置、对局日志和历史录像。
 
@@ -38,17 +40,18 @@ SQLiteCpp、SQLite 和 unordered_dense 等库。它们不是本项目自研代�
 Python 3.11 的 Linux 环境中：
 
 ```bash
-python -m pip install -r panel/ygo-admin/app/requirements.txt numpy==1.26.4
+python -m pip install -r requirements-test.txt
 python -m unittest discover -s tests -v
+python -m unittest discover -s pvp -p 'test_*.py' -v
 python -m unittest discover -s panel/ygo-tcp-bridge/app -p 'test_*.py' -v
 PYTHONPATH=room:room/admin:room/app-305m-admin-20260915 \
-  python -m unittest outbound.test_outbound outbound.test_pool_refresh -v
+  python -m unittest outbound.test_outbound outbound.test_pool_refresh outbound.test_multiroom -v
 ```
 
 测试不会登录真实外服或改线上服务。CI 只验证源码和协议/配置测试；
 它没有模型权重和原生发布资产，不能替代 `preflight --warmup` 或实战验收。
 
-本次发布已通过 80 项本地源码测试，并在算力机隔离目录中完成真实 821M-step
+2026-09-19 发布曾通过 80 项本地源码测试，并在算力机隔离目录中完成真实 821M-step
 `decision-v1` 模型的登记、资源校验与 CPU 策略预热。生产策略 PID 和权重均未改变。
 没有为此次发布重开实战或连接公共外服；完整范围见
 [`verification-20260919.json`](verification-20260919.json)。
@@ -59,5 +62,6 @@ PYTHONPATH=room:room/admin:room/app-305m-admin-20260915 \
 网络协议 vendor 保留 `room/outbound/vendor/README.md` 与源文件哈希记录。
 前端第三方库及卡片数据库、脚本的原有权利信息不因打包而改变。
 
-当前仓库默认私有，没有替所有第三方素材声明统一的新许可证。
-再次分发前应分别核对所使用代码、卡片资源与模型的授权范围。
+2026-11-14 按所有者要求公开仓库，两个应用共用源码仓库，但可以独立部署。
+第三方来源和运行资产范围见 [THIRD_PARTY.md](../THIRD_PARTY.md)；原始许可证保留。
+本次复现验证记录见 [verification-20261114.json](verification-20261114.json)。
